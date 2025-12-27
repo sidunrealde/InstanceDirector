@@ -3,11 +3,11 @@
 	"Version": 1,
 	"VersionName": "1.0",
 	"FriendlyName": "Instance Director",
-	"Description": "Ensures only one instance of the application runs at a time and handles app redirection.",
-	"Category": "Other",
-	"CreatedBy": "",
+	"Description": "Ensures only one instance of the application runs at a time, with automatic window focusing and deep linking support.",
+	"Category": "Code Plugins",
+	"CreatedBy": "SiddarthaG",
 	"CreatedByURL": "",
-	"DocsURL": "",
+	"DocsURL": "https://github.com/sidunrealde/InstanceDirector/blob/main/DEVELOPER_GUIDE.md",
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"CanContainContent": true,
@@ -18,7 +18,10 @@
 		{
 			"Name": "InstanceDirector",
 			"Type": "Runtime",
-			"LoadingPhase": "PreDefault"
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [
+				"Win64"
+			]
 		}
 	]
 }
