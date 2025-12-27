@@ -165,6 +165,8 @@ void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 				}
 			}
 			
+			// Graceful shutdown
+			Socket->Shutdown(ESocketShutdownMode::ReadWrite);
 			Socket->Close();
 			SocketSubsystem->DestroySocket(Socket);
 		}
@@ -188,7 +190,28 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 			TArray<uint8> Buffer;
 			Buffer.SetNumUninitialized(Len + 1); // +1 for null terminator safety
 			
-			if (ClientSocket->Recv(Buffer.GetData(), Len, BytesRead) && BytesRead == Len)
+			// Loop to ensure we read all bytes
+			int32 TotalBytesRead = 0;
+			while (TotalBytesRead < Len)
+			{
+				int32 ChunkRead = 0;
+				if (ClientSocket->Recv(Buffer.GetData() + TotalBytesRead, Len - TotalBytesRead, ChunkRead))
+				{
+					TotalBytesRead += ChunkRead;
+					if (ChunkRead == 0)
+					{
+						// Connection closed prematurely
+						break;
+					}
+				}
+				else
+				{
+					// Error reading
+					break;
+				}
+			}
+
+			if (TotalBytesRead == Len)
 			{
 				Buffer[Len] = 0; // Null terminate
 				ReceivedArguments = FUTF8ToTCHAR((const char*)Buffer.GetData()).Get();
@@ -196,8 +219,9 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 		}
 	}
 
-	// Close the client socket
+	// Clean up the socket manually since we are returning true
 	ClientSocket->Close();
+	ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ClientSocket);
 	
 	// We want to run this on the game thread
 	AsyncTask(ENamedThreads::GameThread, [this, ReceivedArguments]()
@@ -206,7 +230,7 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 		OnInstanceRedirected.Broadcast(ReceivedArguments);
 	});
 
-	return false; // We didn't take ownership, let TcpListener close it.
+	return true; // We took ownership and destroyed the socket
 }
 
 void FInstanceDirectorModule::FocusWindow()
