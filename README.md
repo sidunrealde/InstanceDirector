@@ -1,15 +1,15 @@
 # Instance Director
 
-**Instance Director** is an Unreal Engine plugin that ensures only one instance of your application runs at a time. It handles single-instance enforcement, automatic window focusing, and app redirection (deep linking) by passing command-line arguments from new instances to the running one.
+**Instance Director** is a robust Unreal Engine plugin designed to manage application instances. It ensures single-instance enforcement, handles automatic window focusing, and provides seamless deep linking (app redirection) capabilities via custom URI schemes.
 
 ## Features
 
-*   **Single Instance Enforcement**: Prevents multiple copies of the application from running simultaneously.
+*   **Single Instance Enforcement**: Prevents multiple copies of your application from running simultaneously.
 *   **Automatic Redirection**: Automatically brings the existing instance to the foreground when a user attempts to launch a second one.
-*   **Deep Linking Support**: Passes command-line arguments from the new instance to the running instance, allowing you to trigger specific actions (e.g., joining a lobby, opening a menu).
-*   **URI Scheme Registration**: Easily register custom URI schemes (e.g., `myapp://`) to launch your app from web browsers.
-*   **Blueprint Support**: Easy-to-use Blueprint Subsystem to handle redirect events.
-*   **Configurable**: Toggle functionality and customize the listening port via Project Settings.
+*   **Deep Linking (URI Schemes)**: Register custom protocols (e.g., `mygame://`) to launch or redirect to your application from web browsers or other apps.
+*   **Smart Argument Parsing**: Automatically extracts the relevant data from URI links (e.g., `mygame://join?id=123` -> `join?id=123`), simplifying Blueprint logic.
+*   **Blueprint Support**: Easy-to-use Subsystem with event bindings for handling redirects.
+*   **Configurable**: Toggle functionality and customize settings via Project Settings.
 
 ## Installation
 
@@ -21,44 +21,46 @@
 
 ## Usage
 
-### Configuration
+### 1. Configuration
 
-Go to **Project Settings > Game > Instance Director** to configure the plugin:
+Go to **Project Settings > Game > Instance Director**:
 
-*   **Enable Single Instance Check**: Turn the single-instance check on or off.
+*   **Enable Single Instance Check**: Toggle the single-instance check on/off.
 *   **Port Number**: Set the TCP port used for instance detection (Default: `64321`).
+*   **Deep Linking Settings**:
+    *   **URI Scheme**: Your custom protocol (e.g., `mygame`). Do not include `://`.
+    *   **Register URI Scheme On Startup**: If checked, the app will automatically register the scheme in the Windows Registry on launch.
 
-### Handling Redirects in Blueprints
+### 2. Handling Redirects in Blueprints
 
-To respond to a new instance being launched (e.g., for deep linking):
+To respond to deep links or new instance launches:
 
 1.  Open your **Game Instance** Blueprint.
-2.  Get the **Instance Director Subsystem** node (from `Get Game Instance`).
+2.  Get the **Instance Director Subsystem** node.
 3.  Bind an event to **On App Redirected**.
-4.  The event provides an `Arguments` string containing the command-line arguments passed to the new instance.
+4.  **Crucial**: Call **Check Startup Arguments** immediately after binding (e.g., in `Event Init`) to handle cold starts (launching via link when app is closed).
 
-**Example:**
-If you launch your app with `MyApp.exe -OpenStore`, the `Arguments` string will contain `-OpenStore`. You can parse this string to open the store menu in your running instance.
+**Blueprint Graph Example:**
+`Event Init` -> `Bind Event to OnAppRedirected` -> `Check Startup Arguments`
 
-### Setting up Web Links (URI Scheme)
+**Event Logic:**
+The `OnAppRedirected` event provides an `Arguments` string.
+*   If launched via `mygame://lobby/123`, the string will be `lobby/123`.
+*   You can parse this string to open the specific lobby or menu.
 
-To allow your app to be opened via web links (e.g., `myapp://lobby/123`):
+### 3. Testing Deep Linking
 
-1.  In your **Game Instance** (Event Init), call **Register URI Scheme** from the Instance Director Subsystem.
-2.  Pass your desired scheme name (e.g., `myapp`).
-3.  Package your project and run it once to register the scheme in Windows.
-
-**Testing:**
-1.  Open a web browser.
-2.  Type `myapp://test` in the address bar and press Enter.
-3.  Your application should launch (or focus if running).
-4.  The `On App Redirected` event will fire with the argument `myapp://test`.
+1.  Configure your **URI Scheme** in Project Settings (e.g., `mygame`).
+2.  Package your project (Windows).
+3.  Run the packaged executable **once** to register the scheme in Windows.
+4.  Open a web browser and type `mygame://test`.
+5.  Your application should launch (or focus if running) and receive `test` as the argument.
 
 ## Technical Details
 
 *   **Communication**: Uses a local TCP socket (localhost) to detect instances and pass data.
-*   **Platform Support**: Windows (Primary), Mac/Linux (Should work but untested).
-*   **Engine Version**: Compatible with Unreal Engine 4.27+ and 5.x.
+*   **Platform Support**: Windows (Primary).
+*   **Registry**: Writes to `HKCU\Software\Classes\<Scheme>` for URI registration.
 
 ## License
 
