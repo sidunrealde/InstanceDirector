@@ -4,6 +4,8 @@
 #include "Modules/ModuleManager.h"
 #include "Common/TcpListener.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogInstanceDirector, Log, All);
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnInstanceRedirected, const FString& /* Arguments */);
 
 class FInstanceDirectorModule : public IModuleInterface

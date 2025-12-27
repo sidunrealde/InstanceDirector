@@ -19,13 +19,18 @@
 
 #define LOCTEXT_NAMESPACE "FInstanceDirectorModule"
 
+DEFINE_LOG_CATEGORY(LogInstanceDirector);
+
 FOnInstanceRedirected FInstanceDirectorModule::OnInstanceRedirected;
 
 void FInstanceDirectorModule::StartupModule()
 {
+	UE_LOG(LogInstanceDirector, Log, TEXT("StartupModule called."));
+
 	// Do not run single instance check in Editor or Commandlets (Cooking, etc.)
 	if (GIsEditor || IsRunningCommandlet())
 	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Skipping single instance check (Editor or Commandlet)."));
 		return;
 	}
 
@@ -39,9 +44,14 @@ void FInstanceDirectorModule::StartupModule()
 
 	if (!CheckSingleInstance())
 	{
+		UE_LOG(LogInstanceDirector, Warning, TEXT("Another instance detected. Exiting."));
 		// We are a duplicate instance. We have already notified the existing one.
 		// Request immediate exit
 		FPlatformMisc::RequestExit(false);
+	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("This is the first instance. Listening for connections."));
 	}
 }
 
@@ -102,11 +112,14 @@ bool FInstanceDirectorModule::CheckSingleInstance()
 	
 	if (!Settings->bEnableSingleInstanceCheck)
 	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Single instance check disabled in settings."));
 		return true;
 	}
 
 	const int32 Port = Settings->PortNumber;
 	FIPv4Endpoint Endpoint(FIPv4Address::InternalLoopback, Port);
+
+	UE_LOG(LogInstanceDirector, Log, TEXT("Attempting to bind to port %d"), Port);
 
 	// Try to start a listener on the port
 	// IMPORTANT: Set bReusable to false to prevent multiple instances from binding to the same port!
@@ -117,11 +130,13 @@ bool FInstanceDirectorModule::CheckSingleInstance()
 
 	if (InstanceListener->IsActive())
 	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Successfully bound to port %d"), Port);
 		// We successfully bound to the port, so we are the first instance.
 		return true;
 	}
 	else
 	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Failed to bind to port %d. Assuming another instance is running."), Port);
 		// Failed to bind, likely because another instance is running.
 		// Notify the existing instance to bring it to front.
 		NotifyExistingInstance(Port);
@@ -136,6 +151,15 @@ bool FInstanceDirectorModule::CheckSingleInstance()
 
 void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 {
+	UE_LOG(LogInstanceDirector, Log, TEXT("Notifying existing instance on port %d"), Port);
+
+#if PLATFORM_WINDOWS
+	// Allow the existing instance (or any process) to take the foreground.
+	// This is crucial because Windows blocks background processes from stealing focus
+	// unless the foreground process (us) explicitly allows it.
+	AllowSetForegroundWindow(ASFW_ANY);
+#endif
+
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	if (SocketSubsystem)
 	{
@@ -146,9 +170,27 @@ void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 		FSocket* Socket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("InstanceDirectorNotifier"), false);
 		if (Socket)
 		{
-			// Connect to the existing instance
-			if (Socket->Connect(*Addr))
+			// Disable Nagle's algorithm to send data immediately
+			Socket->SetNoDelay(true);
+
+			// Retry connection logic
+			bool bConnected = false;
+			for (int32 Attempt = 0; Attempt < 3; ++Attempt)
 			{
+				if (Socket->Connect(*Addr))
+				{
+					bConnected = true;
+					break;
+				}
+				UE_LOG(LogInstanceDirector, Warning, TEXT("Connection attempt %d failed. Retrying..."), Attempt + 1);
+				// Wait a bit before retrying
+				FPlatformProcess::Sleep(0.1f);
+			}
+
+			if (bConnected)
+			{
+				UE_LOG(LogInstanceDirector, Log, TEXT("Connected to existing instance. Sending arguments."));
+
 				// Send command line arguments
 				FString CmdLine = FCommandLine::Get();
 				FTCHARToUTF8 Convert(*CmdLine);
@@ -156,13 +198,36 @@ void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 				int32 BytesSent = 0;
 
 				// Send length
-				Socket->Send((uint8*)&Len, sizeof(int32), BytesSent);
+				if (Socket->Send((uint8*)&Len, sizeof(int32), BytesSent))
+				{
+					UE_LOG(LogInstanceDirector, Log, TEXT("Sent length: %d (BytesSent: %d)"), Len, BytesSent);
+				}
+				else
+				{
+					UE_LOG(LogInstanceDirector, Error, TEXT("Failed to send length!"));
+				}
 				
 				// Send data
 				if (Len > 0)
 				{
-					Socket->Send((uint8*)Convert.Get(), Len, BytesSent);
+					if (Socket->Send((uint8*)Convert.Get(), Len, BytesSent))
+					{
+						UE_LOG(LogInstanceDirector, Log, TEXT("Sent data bytes: %d"), BytesSent);
+					}
+					else
+					{
+						UE_LOG(LogInstanceDirector, Error, TEXT("Failed to send data!"));
+					}
 				}
+
+				UE_LOG(LogInstanceDirector, Log, TEXT("Sent %d bytes of arguments: %s"), Len, *CmdLine);
+
+				// Give a small moment for data to be flushed before shutdown
+				FPlatformProcess::Sleep(0.05f);
+			}
+			else
+			{
+				UE_LOG(LogInstanceDirector, Error, TEXT("Failed to connect to existing instance after retries."));
 			}
 			
 			// Graceful shutdown
@@ -175,6 +240,11 @@ void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 
 bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
+	UE_LOG(LogInstanceDirector, Log, TEXT("Received connection from %s"), *ClientEndpoint.ToString());
+
+	// Ensure socket is blocking
+	ClientSocket->SetNonBlocking(false);
+
 	// We received a connection, which means a duplicate instance tried to start.
 	
 	// Read command line arguments
@@ -183,8 +253,31 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 	FString ReceivedArguments;
 
 	// Read length
-	if (ClientSocket->Recv((uint8*)&Len, sizeof(int32), BytesRead) && BytesRead == sizeof(int32))
+	// We loop here too just in case, though 4 bytes should come in one go usually
+	int32 TotalLengthBytesRead = 0;
+	while (TotalLengthBytesRead < sizeof(int32))
 	{
+		int32 ChunkRead = 0;
+		if (ClientSocket->Recv((uint8*)&Len + TotalLengthBytesRead, sizeof(int32) - TotalLengthBytesRead, ChunkRead))
+		{
+			TotalLengthBytesRead += ChunkRead;
+			if (ChunkRead == 0)
+			{
+				// Connection closed
+				break;
+			}
+		}
+		else
+		{
+			// Error
+			break;
+		}
+	}
+
+	if (TotalLengthBytesRead == sizeof(int32))
+	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Received length: %d"), Len);
+
 		if (Len > 0)
 		{
 			TArray<uint8> Buffer;
@@ -200,13 +293,13 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 					TotalBytesRead += ChunkRead;
 					if (ChunkRead == 0)
 					{
-						// Connection closed prematurely
+						UE_LOG(LogInstanceDirector, Warning, TEXT("Connection closed prematurely while reading data."));
 						break;
 					}
 				}
 				else
 				{
-					// Error reading
+					UE_LOG(LogInstanceDirector, Error, TEXT("Error reading data from socket."));
 					break;
 				}
 			}
@@ -215,8 +308,17 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 			{
 				Buffer[Len] = 0; // Null terminate
 				ReceivedArguments = FUTF8ToTCHAR((const char*)Buffer.GetData()).Get();
+				UE_LOG(LogInstanceDirector, Log, TEXT("Received arguments: %s"), *ReceivedArguments);
+			}
+			else
+			{
+				UE_LOG(LogInstanceDirector, Error, TEXT("Failed to read all bytes. Expected %d, got %d"), Len, TotalBytesRead);
 			}
 		}
+	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Error, TEXT("Failed to read length from socket. Read %d bytes."), TotalLengthBytesRead);
 	}
 
 	// Clean up the socket manually since we are returning true
@@ -235,6 +337,8 @@ bool FInstanceDirectorModule::HandleConnectionAccepted(FSocket* ClientSocket, co
 
 void FInstanceDirectorModule::FocusWindow()
 {
+	UE_LOG(LogInstanceDirector, Log, TEXT("Focusing window..."));
+
 	if (FSlateApplication::IsInitialized())
 	{
 		FSlateApplication& SlateApp = FSlateApplication::Get();
@@ -273,9 +377,20 @@ void FInstanceDirectorModule::FocusWindow()
 					
 					// Force foreground
 					SetForegroundWindow(Hwnd);
+					
+					// Additional attempts to force focus
+					BringWindowToTop(Hwnd);
+					
+					// SwitchToThisWindow is deprecated but often works where SetForegroundWindow fails
+					// The second parameter 'true' means "alt-tab" style switch
+					SwitchToThisWindow(Hwnd, true);
 				}
 			}
 #endif
+		}
+		else
+		{
+			UE_LOG(LogInstanceDirector, Warning, TEXT("No active window found to focus."));
 		}
 	}
 }
