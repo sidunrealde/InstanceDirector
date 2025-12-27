@@ -10,6 +10,7 @@
 #include "Misc/CommandLine.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -26,6 +27,7 @@ FOnInstanceRedirected FInstanceDirectorModule::OnInstanceRedirected;
 void FInstanceDirectorModule::StartupModule()
 {
 	UE_LOG(LogInstanceDirector, Log, TEXT("StartupModule called."));
+	UE_LOG(LogInstanceDirector, Log, TEXT("Raw Command Line: %s"), *GetRawCommandLine());
 
 	// Do not run single instance check in Editor or Commandlets (Cooking, etc.)
 	if (GIsEditor || IsRunningCommandlet())
@@ -39,6 +41,7 @@ void FInstanceDirectorModule::StartupModule()
 	// Check if we should register the URI scheme on startup
 	if (Settings->bRegisterURISchemeOnStartup && !Settings->URIScheme.IsEmpty())
 	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Auto-registering URI scheme from settings: %s"), *Settings->URIScheme);
 		RegisterURIScheme(Settings->URIScheme, Settings->URISchemeFriendlyName);
 	}
 
@@ -64,17 +67,45 @@ void FInstanceDirectorModule::ShutdownModule()
 	}
 }
 
+FString FInstanceDirectorModule::GetRawCommandLine()
+{
+#if PLATFORM_WINDOWS
+	return FString(::GetCommandLineW());
+#else
+	return FCommandLine::Get();
+#endif
+}
+
 void FInstanceDirectorModule::RegisterURIScheme(const FString& SchemeName, const FString& FriendlyName)
 {
+	UE_LOG(LogInstanceDirector, Log, TEXT("RegisterURIScheme called for: %s"), *SchemeName);
+
 #if PLATFORM_WINDOWS
 	if (SchemeName.IsEmpty())
 	{
+		UE_LOG(LogInstanceDirector, Warning, TEXT("RegisterURIScheme: SchemeName is empty."));
 		return;
 	}
 
 	FString ExePath = FPaths::ConvertRelativePathToFull(FPlatformProcess::ExecutablePath());
+	
+	// Verify file exists
+	if (!IFileManager::Get().FileExists(*ExePath))
+	{
+		UE_LOG(LogInstanceDirector, Error, TEXT("Executable path does not exist on disk! Path: %s"), *ExePath);
+	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Log, TEXT("Executable path verified: %s"), *ExePath);
+	}
+
+	// Normalize path to use backslashes for Windows Registry compatibility
+	FPaths::MakePlatformFilename(ExePath);
+
 	// Ensure path is quoted
 	FString Command = FString::Printf(TEXT("\"%s\" \"%%1\""), *ExePath);
+	
+	UE_LOG(LogInstanceDirector, Log, TEXT("Registering command: %s"), *Command);
 
 	HKEY Key;
 	LONG Result;
@@ -92,6 +123,11 @@ void FInstanceDirectorModule::RegisterURIScheme(const FString& SchemeName, const
 		RegSetValueEx(Key, TEXT("URL Protocol"), 0, REG_SZ, (const BYTE*)*UrlProtocol, (UrlProtocol.Len() + 1) * sizeof(TCHAR));
 		
 		RegCloseKey(Key);
+		UE_LOG(LogInstanceDirector, Log, TEXT("Successfully created root key: %s"), *RootKeyPath);
+	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Error, TEXT("Failed to create root key: %s. Error Code: %d"), *RootKeyPath, Result);
 	}
 
 	// 2. Create the command key
@@ -102,7 +138,49 @@ void FInstanceDirectorModule::RegisterURIScheme(const FString& SchemeName, const
 	{
 		RegSetValueEx(Key, NULL, 0, REG_SZ, (const BYTE*)*Command, (Command.Len() + 1) * sizeof(TCHAR));
 		RegCloseKey(Key);
+		UE_LOG(LogInstanceDirector, Log, TEXT("Successfully created command key: %s"), *CommandKeyPath);
 	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Error, TEXT("Failed to create command key: %s. Error Code: %d"), *CommandKeyPath, Result);
+	}
+
+	// --- VERIFICATION ---
+	// Read back the value to confirm
+	HKEY ReadKey;
+	Result = RegOpenKeyEx(HKEY_CURRENT_USER, *CommandKeyPath, 0, KEY_READ, &ReadKey);
+	if (Result == ERROR_SUCCESS)
+	{
+		TCHAR Buffer[MAX_PATH * 2];
+		DWORD BufferSize = sizeof(Buffer);
+		Result = RegQueryValueEx(ReadKey, NULL, 0, NULL, (LPBYTE)Buffer, &BufferSize);
+		if (Result == ERROR_SUCCESS)
+		{
+			FString ReadValue = FString(Buffer);
+			UE_LOG(LogInstanceDirector, Log, TEXT("VERIFICATION: Registry key contains: %s"), *ReadValue);
+			
+			if (ReadValue == Command)
+			{
+				UE_LOG(LogInstanceDirector, Log, TEXT("VERIFICATION: Match confirmed."));
+			}
+			else
+			{
+				UE_LOG(LogInstanceDirector, Error, TEXT("VERIFICATION: Mismatch! Expected: %s"), *Command);
+			}
+		}
+		else
+		{
+			UE_LOG(LogInstanceDirector, Error, TEXT("VERIFICATION: Failed to read value. Error Code: %d"), Result);
+		}
+		RegCloseKey(ReadKey);
+	}
+	else
+	{
+		UE_LOG(LogInstanceDirector, Error, TEXT("VERIFICATION: Failed to open key for reading. Error Code: %d"), Result);
+	}
+
+#else
+	UE_LOG(LogInstanceDirector, Warning, TEXT("RegisterURIScheme is only supported on Windows."));
 #endif
 }
 
@@ -192,7 +270,8 @@ void FInstanceDirectorModule::NotifyExistingInstance(int32 Port)
 				UE_LOG(LogInstanceDirector, Log, TEXT("Connected to existing instance. Sending arguments."));
 
 				// Send command line arguments
-				FString CmdLine = FCommandLine::Get();
+				// Use GetRawCommandLine to ensure we get the full arguments including URI
+				FString CmdLine = GetRawCommandLine();
 				FTCHARToUTF8 Convert(*CmdLine);
 				int32 Len = Convert.Length();
 				int32 BytesSent = 0;

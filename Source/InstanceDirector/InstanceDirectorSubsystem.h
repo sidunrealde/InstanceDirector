@@ -30,6 +30,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Instance Director")
 	void RegisterURIScheme(FString SchemeName);
 
+	/**
+	 * Checks the command line arguments used to launch this instance.
+	 * If arguments are found, it broadcasts the OnAppRedirected event.
+	 * Call this in your GameInstance Init after binding to the event to handle cold starts (e.g. URI links).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Instance Director")
+	void CheckStartupArguments();
+
 private:
 	void HandleRedirect(const FString& Arguments);
+	FString ExtractDeepLink(const FString& CommandLine);
 };

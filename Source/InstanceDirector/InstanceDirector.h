@@ -21,6 +21,9 @@ public:
 	/** Registers the URI scheme in the Windows Registry */
 	static void RegisterURIScheme(const FString& SchemeName, const FString& FriendlyName);
 
+	/** Gets the raw command line from the OS */
+	static FString GetRawCommandLine();
+
 private:
 	bool CheckSingleInstance();
 	void NotifyExistingInstance(int32 Port);
