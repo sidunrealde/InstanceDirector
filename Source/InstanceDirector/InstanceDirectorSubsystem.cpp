@@ -23,26 +23,17 @@ void UInstanceDirectorSubsystem::HandleRedirect(const FString& Arguments)
 {
 	UE_LOG(LogInstanceDirector, Log, TEXT("Subsystem received redirect arguments: %s"), *Arguments);
 	
-	FString DeepLink = ExtractDeepLink(Arguments);
-	if (!DeepLink.IsEmpty())
+	FString ParsedArgs = ParseArguments(Arguments);
+	
+	// Only broadcast if we have something meaningful
+	if (!ParsedArgs.IsEmpty())
 	{
-		UE_LOG(LogInstanceDirector, Log, TEXT("Extracted Deep Link: %s"), *DeepLink);
-		OnAppRedirected.Broadcast(DeepLink);
+		UE_LOG(LogInstanceDirector, Log, TEXT("Parsed Arguments: %s"), *ParsedArgs);
+		OnAppRedirected.Broadcast(ParsedArgs);
 	}
 	else
 	{
-		// If no deep link found, broadcast original arguments (or maybe nothing?)
-		// User requested "Just send the string after ://".
-		// If we can't find ://, maybe we shouldn't broadcast?
-		// But for normal args like "-OpenMenu", we might want to keep them.
-		// Let's assume if no URI is found, we broadcast the full args as fallback, 
-		// OR we try to be smart.
-		// Given the request "Just send the string after ://", I will prioritize that.
-		// But if I launch with "-OpenMenu", there is no ://.
-		// I'll stick to: If URI found, send suffix. Else send full.
-		
-		UE_LOG(LogInstanceDirector, Log, TEXT("No URI scheme found. Broadcasting full arguments."));
-		OnAppRedirected.Broadcast(Arguments);
+		UE_LOG(LogInstanceDirector, Log, TEXT("Parsed arguments are empty. Ignoring."));
 	}
 }
 
@@ -62,37 +53,61 @@ void UInstanceDirectorSubsystem::CheckStartupArguments()
 	
 	if (!CmdLine.IsEmpty())
 	{
-		FString DeepLink = ExtractDeepLink(CmdLine);
-		if (!DeepLink.IsEmpty())
+		FString ParsedArgs = ParseArguments(CmdLine);
+		
+		if (!ParsedArgs.IsEmpty())
 		{
-			UE_LOG(LogInstanceDirector, Log, TEXT("Extracted Deep Link: %s"), *DeepLink);
-			OnAppRedirected.Broadcast(DeepLink);
+			UE_LOG(LogInstanceDirector, Log, TEXT("Parsed Startup Arguments: %s"), *ParsedArgs);
+			OnAppRedirected.Broadcast(ParsedArgs);
 		}
 		else
 		{
-			// Fallback to full command line if no URI found
-			OnAppRedirected.Broadcast(CmdLine);
+			UE_LOG(LogInstanceDirector, Log, TEXT("Parsed startup arguments are empty. Ignoring."));
 		}
 	}
 }
 
-FString UInstanceDirectorSubsystem::ExtractDeepLink(const FString& CommandLine)
+FString UInstanceDirectorSubsystem::ParseArguments(const FString& CommandLine)
 {
-	// Simple parsing to find a token containing "://"
-	// We iterate through tokens to handle quotes properly
-	
 	const TCHAR* Stream = *CommandLine;
 	FString Token;
-	
+	FString Result;
+	bool bFirstToken = true;
+
 	while (FParse::Token(Stream, Token, false))
 	{
+		// Skip the first token (Executable path)
+		if (bFirstToken)
+		{
+			bFirstToken = false;
+			continue;
+		}
+
+		// Check for Deep Link
 		int32 Index = Token.Find(TEXT("://"));
 		if (Index != INDEX_NONE)
 		{
-			// Found it! Return everything after "://"
-			return Token.Mid(Index + 3);
+			// Found a deep link! Return everything after "://"
+			FString DeepLink = Token.Mid(Index + 3);
+			
+			// Remove trailing slash if present
+			if (DeepLink.EndsWith(TEXT("/")))
+			{
+				DeepLink.LeftChopInline(1);
+			}
+			
+			// If we find a deep link, we usually prioritize it and return just that
+			// (Assuming one deep link per launch)
+			return DeepLink;
 		}
+
+		// Accumulate other arguments
+		if (!Result.IsEmpty())
+		{
+			Result += TEXT(" ");
+		}
+		Result += Token;
 	}
 	
-	return FString();
+	return Result;
 }

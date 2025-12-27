@@ -40,5 +40,12 @@ public:
 
 private:
 	void HandleRedirect(const FString& Arguments);
-	FString ExtractDeepLink(const FString& CommandLine);
+	
+	/** 
+	 * Parses the raw command line to extract relevant arguments.
+	 * - If a Deep Link (://) is found, returns the suffix (e.g. "mygame://foo" -> "foo").
+	 * - If no Deep Link, returns the arguments excluding the executable path.
+	 * - If only executable path is present, returns empty string.
+	 */
+	FString ParseArguments(const FString& CommandLine);
 };
