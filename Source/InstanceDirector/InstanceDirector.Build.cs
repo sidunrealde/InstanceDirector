@@ -1,3 +1,5 @@
+// Copyright SiddarthaG 2025. All Rights Reserved.
+
 using UnrealBuildTool;
 
 public class InstanceDirector : ModuleRules

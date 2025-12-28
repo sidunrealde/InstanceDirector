@@ -61,7 +61,3 @@ The `OnAppRedirected` event provides an `Arguments` string.
 *   **Communication**: Uses a local TCP socket (localhost) to detect instances and pass data.
 *   **Platform Support**: Windows (Primary).
 *   **Registry**: Writes to `HKCU\Software\Classes\<Scheme>` for URI registration.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
